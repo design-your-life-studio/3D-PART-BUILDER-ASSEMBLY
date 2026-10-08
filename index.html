@@ -227,7 +227,10 @@
         let selectedObject = null; // 目前選取準備操作的零件
         let isGridSnapEnabled = false;
         let isShiftDown = false; // 新增：追蹤 Shift 鍵狀態
-        let collisionHelper; // 新增：用於顯示觸碰時的亮粉色智慧對齊線
+
+        // 碰撞狀態變數 (僅保留視覺線框)
+        let collisionBox = null;
+        let alignmentLinesGroup = null; // 新增：用於存放對齊提醒線的群組
 
         // --- 初始化系統 ---
         function initSystem() {
@@ -316,14 +319,9 @@
             dirLight2.position.set(-500, 500, -500);
             rightScene.add(dirLight2);
 
-            // ================= 觸碰高亮對齊線 (亮粉色) =================
-            // 建立一個初始隱藏的 Bounding Box 輔助線框
-            collisionHelper = new THREE.BoxHelper(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1)), 0xff1493); // 0xff1493 為亮粉色 (DeepPink)
-            collisionHelper.material.depthTest = false; // 關閉深度測試，讓粉紅線穿透物件顯示在最上層，絕不會被遮擋
-            collisionHelper.material.transparent = true;
-            collisionHelper.material.opacity = 0.9;
-            collisionHelper.visible = false;
-            rightScene.add(collisionHelper);
+            // 初始化對齊線群組
+            alignmentLinesGroup = new THREE.Group();
+            rightScene.add(alignmentLinesGroup);
 
             // ================= 組裝互動核心：TransformControls =================
             transformControl = new TransformControls(rightCamera, rightRenderer.domElement);
@@ -331,15 +329,24 @@
             transformControl.addEventListener('dragging-changed', function (event) {
                 rightControls.enabled = !event.value;
                 if (!event.value) {
-                    // 拖曳結束時隱藏角度提示與碰撞高亮線
+                    // 拖曳結束時隱藏角度提示
                     document.getElementById('rotation-tooltip').classList.add('hidden');
-                    if (collisionHelper) collisionHelper.visible = false;
+                    
+                    // 拖曳結束時隱藏碰撞線
+                    if (collisionBox) collisionBox.visible = false;
+                    
+                    // 拖曳結束時清除對齊線
+                    while(alignmentLinesGroup.children.length > 0){ 
+                        const child = alignmentLinesGroup.children[0];
+                        alignmentLinesGroup.remove(child);
+                        child.geometry.dispose();
+                        child.material.dispose();
+                    }
                 }
             });
             
-            // 新增：監聽變化以顯示旋轉角度與偵測碰撞
+            // 新增：監聽變化以顯示旋轉角度與處理碰撞
             transformControl.addEventListener('change', function () {
-                // 1. 旋轉角度提示邏輯
                 if (transformControl.dragging && transformControl.getMode() === 'rotate' && selectedObject) {
                     const tooltip = document.getElementById('rotation-tooltip');
                     tooltip.classList.remove('hidden');
@@ -355,29 +362,142 @@
                     tooltip.innerText = `X: ${rx}° | Y: ${ry}° | Z: ${rz}°`;
                 }
 
-                // 2. 智慧對齊碰撞偵測邏輯 (拖曳移動時檢查)
-                if (transformControl.dragging && selectedObject) {
-                    const selectedBox = new THREE.Box3().setFromObject(selectedObject);
-                    let hasCollision = false;
+                // ================= 碰撞偵測 (僅顯示亮粉色對齊線，無停頓) =================
+                if (transformControl.dragging && transformControl.getMode() === 'translate' && selectedObject) {
+                    
+                    // 碰撞檢查
+                    selectedObject.updateMatrixWorld();
+                    const selBox = new THREE.Box3().setFromObject(selectedObject);
+                    let isColliding = false;
 
-                    // 遍歷場景中其他零件，檢查邊界框是否重疊 (觸碰)
                     for (let i = 0; i < assembledObjects.length; i++) {
-                        const otherObj = assembledObjects[i];
-                        if (otherObj === selectedObject) continue;
+                        const obj = assembledObjects[i];
+                        if (obj === selectedObject) continue;
 
-                        const otherBox = new THREE.Box3().setFromObject(otherObj);
-                        if (selectedBox.intersectsBox(otherBox)) {
-                            hasCollision = true;
+                        obj.updateMatrixWorld();
+                        const targetBox = new THREE.Box3().setFromObject(obj);
+
+                        // 判斷是否重疊
+                        if (selBox.intersectsBox(targetBox)) {
+                            isColliding = true;
                             break;
                         }
                     }
 
-                    // 若碰觸到其他物件，顯示亮粉色外框
-                    if (hasCollision) {
-                        collisionHelper.setFromObject(selectedObject);
-                        collisionHelper.visible = true;
+                    // 處理碰撞結果 (純視覺)
+                    if (isColliding) {
+                        // 顯示亮粉色智慧對齊線
+                        if (!collisionBox) {
+                            collisionBox = new THREE.Box3Helper(new THREE.Box3(), 0xff1493);
+                            collisionBox.material.depthTest = false; // 穿透顯示
+                            collisionBox.material.transparent = true;
+                            collisionBox.material.opacity = 0.8;
+                            collisionBox.material.linewidth = 2;
+                            rightScene.add(collisionBox);
+                        }
+                        collisionBox.box.setFromObject(selectedObject);
+                        collisionBox.visible = true;
                     } else {
-                        collisionHelper.visible = false;
+                        // 沒碰到，隱藏粉紅框
+                        if (collisionBox) collisionBox.visible = false;
+                    }
+
+                    // ================= 智慧對齊線 (Smart Guides) =================
+                    // 先清除前一個影格的線條
+                    while(alignmentLinesGroup.children.length > 0){ 
+                        const child = alignmentLinesGroup.children[0];
+                        alignmentLinesGroup.remove(child);
+                        child.geometry.dispose();
+                        child.material.dispose();
+                    }
+
+                    const THRESHOLD = 3; // 對齊容差距離 (單位)
+                    const centerColor = 0x00e5ff; // 青藍色 (表示置中或切齊)
+                    const touchColor = 0xff9900;  // 橘黃色 (表示邊界互相碰觸)
+
+                    // 取得被選取物件的邊界與中心點
+                    const boxA = new THREE.Box3().setFromObject(selectedObject);
+                    const centerA = new THREE.Vector3();
+                    boxA.getCenter(centerA);
+
+                    // 繪製直線 (Y軸方向) - 用於 X 或 Z 軸對齊時
+                    const drawVertical = (x, z, color) => {
+                        const minY = boxA.min.y - 100; // 往下延伸畫線
+                        const maxY = boxA.max.y + 100; // 往上延伸畫線
+                        const pts = [new THREE.Vector3(x, minY, z), new THREE.Vector3(x, maxY, z)];
+                        const geo = new THREE.BufferGeometry().setFromPoints(pts);
+                        const mat = new THREE.LineBasicMaterial({ color: color, depthTest: false, linewidth: 2, transparent: true, opacity: 0.8 });
+                        alignmentLinesGroup.add(new THREE.Line(geo, mat));
+                    };
+
+                    // 繪製橫線 (X軸或Z軸方向) - 用於 Y 軸對齊時
+                    const drawHorizontal = (y, axis, color) => {
+                        let pts = [];
+                        if (axis === 'x') {
+                            pts = [new THREE.Vector3(boxA.min.x - 100, y, centerA.z), new THREE.Vector3(boxA.max.x + 100, y, centerA.z)];
+                        } else {
+                            pts = [new THREE.Vector3(centerA.x, y, boxA.min.z - 100), new THREE.Vector3(centerA.x, y, boxA.max.z + 100)];
+                        }
+                        const geo = new THREE.BufferGeometry().setFromPoints(pts);
+                        const mat = new THREE.LineBasicMaterial({ color: color, depthTest: false, linewidth: 2, transparent: true, opacity: 0.8 });
+                        alignmentLinesGroup.add(new THREE.Line(geo, mat));
+                    };
+
+                    for (let i = 0; i < assembledObjects.length; i++) {
+                        const objB = assembledObjects[i];
+                        if (objB === selectedObject) continue;
+
+                        objB.updateMatrixWorld();
+                        const boxB = new THREE.Box3().setFromObject(objB);
+                        const centerB = new THREE.Vector3();
+                        boxB.getCenter(centerB);
+
+                        // --- 1. 左右前後 (X / Z) 移動對到了 -> 直線 ---
+                        
+                        // [中心對齊]
+                        if (Math.abs(centerA.x - centerB.x) < THRESHOLD) drawVertical(centerB.x, centerA.z, centerColor);
+                        if (Math.abs(centerA.z - centerB.z) < THRESHOLD) drawVertical(centerA.x, centerB.z, centerColor);
+                        
+                        // [邊緣切齊 (側邊平齊)]
+                        if (Math.abs(boxA.min.x - boxB.min.x) < THRESHOLD) drawVertical(boxB.min.x, centerA.z, centerColor);
+                        if (Math.abs(boxA.max.x - boxB.max.x) < THRESHOLD) drawVertical(boxB.max.x, centerA.z, centerColor);
+                        if (Math.abs(boxA.min.z - boxB.min.z) < THRESHOLD) drawVertical(centerA.x, boxB.min.z, centerColor);
+                        if (Math.abs(boxA.max.z - boxB.max.z) < THRESHOLD) drawVertical(centerA.x, boxB.max.z, centerColor);
+                        
+                        // [邊界碰觸 (左右前後互相靠攏)]
+                        if (Math.abs(boxA.max.x - boxB.min.x) < THRESHOLD) drawVertical(boxB.min.x, centerA.z, touchColor);
+                        if (Math.abs(boxA.min.x - boxB.max.x) < THRESHOLD) drawVertical(boxB.max.x, centerA.z, touchColor);
+                        if (Math.abs(boxA.max.z - boxB.min.z) < THRESHOLD) drawVertical(centerA.x, boxB.min.z, touchColor);
+                        if (Math.abs(boxA.min.z - boxB.max.z) < THRESHOLD) drawVertical(centerA.x, boxB.max.z, touchColor);
+
+
+                        // --- 2. 上下 (Y) 移動對到了 -> 橫線 ---
+                        
+                        // [中心對齊]
+                        if (Math.abs(centerA.y - centerB.y) < THRESHOLD) {
+                            drawHorizontal(centerB.y, 'x', centerColor);
+                            drawHorizontal(centerB.y, 'z', centerColor);
+                        }
+                        
+                        // [邊緣切齊 (上下平齊)]
+                        if (Math.abs(boxA.min.y - boxB.min.y) < THRESHOLD) {
+                            drawHorizontal(boxB.min.y, 'x', centerColor);
+                            drawHorizontal(boxB.min.y, 'z', centerColor);
+                        }
+                        if (Math.abs(boxA.max.y - boxB.max.y) < THRESHOLD) {
+                            drawHorizontal(boxB.max.y, 'x', centerColor);
+                            drawHorizontal(boxB.max.y, 'z', centerColor);
+                        }
+                        
+                        // [邊界碰觸 (上下互相疊加)]
+                        if (Math.abs(boxA.max.y - boxB.min.y) < THRESHOLD) {
+                            drawHorizontal(boxB.min.y, 'x', touchColor);
+                            drawHorizontal(boxB.min.y, 'z', touchColor);
+                        }
+                        if (Math.abs(boxA.min.y - boxB.max.y) < THRESHOLD) {
+                            drawHorizontal(boxB.max.y, 'x', touchColor);
+                            drawHorizontal(boxB.max.y, 'z', touchColor);
+                        }
                     }
                 }
             });
@@ -549,7 +669,17 @@
             selectedObject = null;
             transformControl.detach();
             document.getElementById('selection-hint').classList.remove('hidden');
-            if (collisionHelper) collisionHelper.visible = false; // 取消選取時一併隱藏碰撞線
+            if (collisionBox) collisionBox.visible = false; // 取消選取時一併隱藏碰撞線
+            
+            // 取消選取時清除對齊線
+            if (alignmentLinesGroup) {
+                while(alignmentLinesGroup.children.length > 0){ 
+                    const child = alignmentLinesGroup.children[0];
+                    alignmentLinesGroup.remove(child);
+                    child.geometry.dispose();
+                    child.material.dispose();
+                }
+            }
         }
 
         // --- 工具列對齊功能實作 ---
