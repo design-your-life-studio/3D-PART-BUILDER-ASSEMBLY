@@ -76,10 +76,12 @@
     <!-- 頂部導覽列 -->
     <header class="h-10 border-b border-[#111] bg-[#2a2a2a] flex items-center px-4 shadow-sm z-20 shrink-0">
         <h1 class="text-xs font-semibold tracking-wider text-gray-200">3D PART BUILDER & ASSEMBLY</h1>
-        <div class="ml-auto text-[11px] text-gray-500 flex gap-4">
+        <div class="ml-auto text-[11px] text-gray-500 flex items-center gap-4">
             <span>左鍵：旋轉/選取</span>
             <span>中鍵：平移</span>
             <span>滾輪：縮放</span>
+            <div class="w-px h-4 bg-[#444]"></div>
+            <button id="btn-save" class="bg-[#1473e6] hover:bg-[#0d66d0] text-white px-3 py-1.5 rounded transition-colors text-[11px] font-medium shadow">儲存雲端進度</button>
         </div>
     </header>
 
@@ -170,7 +172,6 @@
                 <!-- 對齊工具 -->
                 <button id="tool-snap-grid" class="btn-tool text-sm px-4 py-1.5 rounded whitespace-nowrap" title="拖曳時按固定網格移動">網格吸附: 關</button>
                 <button id="tool-align-floor" class="btn-tool text-sm px-4 py-1.5 rounded whitespace-nowrap" title="將選取的零件底部貼齊基準面">貼齊地面</button>
-                <button id="tool-snap-nearest" class="btn-tool text-sm px-4 py-1.5 rounded whitespace-nowrap" title="將選取物件吸附至最近的物件表面">吸附最近物件</button>
                 <button id="tool-align-center" class="btn-tool text-sm px-4 py-1.5 rounded whitespace-nowrap" title="將選取的零件移至場景中心">置中對齊</button>
                 
                 <div class="w-px h-7 bg-[#444] self-center mx-1"></div>
@@ -202,8 +203,18 @@
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
         import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
+        // Firebase 雲端資料庫模組匯入
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
         // --- 全域變數定義 ---
         
+        // Firebase 相關變數
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        let app, db, auth, userId;
+
         // 左側 (預覽區)
         let leftScene, leftCamera, leftRenderer, leftControls;
         let previewMesh; // 目前正在編輯預覽的網格模型
@@ -216,6 +227,7 @@
         let selectedObject = null; // 目前選取準備操作的零件
         let isGridSnapEnabled = false;
         let isShiftDown = false; // 新增：追蹤 Shift 鍵狀態
+        let collisionHelper; // 新增：用於顯示觸碰時的亮粉色智慧對齊線
 
         // --- 初始化系統 ---
         function initSystem() {
@@ -231,7 +243,6 @@
             
             // 使用 ResizeObserver 確保側邊欄收合動畫時畫布能即時自適應
             const resizeObserver = new ResizeObserver(() => {
-                // 使用 requestAnimationFrame 包裝，避免 ResizeObserver loop limit exceeded 報錯
                 window.requestAnimationFrame(() => {
                     onWindowResize();
                 });
@@ -241,6 +252,9 @@
             
             // 視窗縮放處理
             window.addEventListener('resize', onWindowResize);
+
+            // 初始化 Firebase，連接雲端資料庫
+            initFirebase();
         }
 
         function initLeftScene() {
@@ -302,19 +316,30 @@
             dirLight2.position.set(-500, 500, -500);
             rightScene.add(dirLight2);
 
+            // ================= 觸碰高亮對齊線 (亮粉色) =================
+            // 建立一個初始隱藏的 Bounding Box 輔助線框
+            collisionHelper = new THREE.BoxHelper(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1)), 0xff1493); // 0xff1493 為亮粉色 (DeepPink)
+            collisionHelper.material.depthTest = false; // 關閉深度測試，讓粉紅線穿透物件顯示在最上層，絕不會被遮擋
+            collisionHelper.material.transparent = true;
+            collisionHelper.material.opacity = 0.9;
+            collisionHelper.visible = false;
+            rightScene.add(collisionHelper);
+
             // ================= 組裝互動核心：TransformControls =================
             transformControl = new TransformControls(rightCamera, rightRenderer.domElement);
             // 當使用工具軸拖曳物體時，暫停 OrbitControls 的視角旋轉，避免衝突
             transformControl.addEventListener('dragging-changed', function (event) {
                 rightControls.enabled = !event.value;
                 if (!event.value) {
-                    // 拖曳結束時隱藏角度提示
+                    // 拖曳結束時隱藏角度提示與碰撞高亮線
                     document.getElementById('rotation-tooltip').classList.add('hidden');
+                    if (collisionHelper) collisionHelper.visible = false;
                 }
             });
             
-            // 新增：監聽變化以顯示旋轉角度
+            // 新增：監聽變化以顯示旋轉角度與偵測碰撞
             transformControl.addEventListener('change', function () {
+                // 1. 旋轉角度提示邏輯
                 if (transformControl.dragging && transformControl.getMode() === 'rotate' && selectedObject) {
                     const tooltip = document.getElementById('rotation-tooltip');
                     tooltip.classList.remove('hidden');
@@ -328,6 +353,32 @@
                     rz = rz === -0 ? 0 : rz;
                     
                     tooltip.innerText = `X: ${rx}° | Y: ${ry}° | Z: ${rz}°`;
+                }
+
+                // 2. 智慧對齊碰撞偵測邏輯 (拖曳移動時檢查)
+                if (transformControl.dragging && selectedObject) {
+                    const selectedBox = new THREE.Box3().setFromObject(selectedObject);
+                    let hasCollision = false;
+
+                    // 遍歷場景中其他零件，檢查邊界框是否重疊 (觸碰)
+                    for (let i = 0; i < assembledObjects.length; i++) {
+                        const otherObj = assembledObjects[i];
+                        if (otherObj === selectedObject) continue;
+
+                        const otherBox = new THREE.Box3().setFromObject(otherObj);
+                        if (selectedBox.intersectsBox(otherBox)) {
+                            hasCollision = true;
+                            break;
+                        }
+                    }
+
+                    // 若碰觸到其他物件，顯示亮粉色外框
+                    if (hasCollision) {
+                        collisionHelper.setFromObject(selectedObject);
+                        collisionHelper.visible = true;
+                    } else {
+                        collisionHelper.visible = false;
+                    }
                 }
             });
 
@@ -385,6 +436,25 @@
             
             previewMesh = new THREE.Mesh(geometry, material);
 
+            // 儲存生成參數，用於存檔與還原重建
+            previewMesh.userData = { type: type, color: colorHex, params: {} };
+            if (type === 'box') {
+                previewMesh.userData.params = { 
+                    w: parseFloat(document.getElementById('box-w').value) || 100,
+                    h: parseFloat(document.getElementById('box-h').value) || 100,
+                    d: parseFloat(document.getElementById('box-d').value) || 100
+                };
+            } else if (type === 'cylinder') {
+                previewMesh.userData.params = { 
+                    r: parseFloat(document.getElementById('cyl-r').value) || 50,
+                    h: parseFloat(document.getElementById('cyl-h').value) || 150
+                };
+            } else if (type === 'sphere') {
+                previewMesh.userData.params = { 
+                    r: parseFloat(document.getElementById('sph-r').value) || 60
+                };
+            }
+
             // 加入白色的 CAD 風格外框線
             const edges = new THREE.EdgesGeometry(geometry);
             const lineMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 1, opacity: 0.3, transparent: true });
@@ -413,8 +483,9 @@
             // 將新零件放置在右側場景的原點上方，提示使用者剛加入
             newMesh.position.set(0, 100, 0); 
             
-            // 給予自訂屬性以便識別
-            newMesh.userData = { isAssemblyPart: true };
+            // 給予自訂屬性以便識別與存檔
+            newMesh.userData = JSON.parse(JSON.stringify(previewMesh.userData));
+            newMesh.userData.isAssemblyPart = true;
 
             rightScene.add(newMesh);
             assembledObjects.push(newMesh);
@@ -478,8 +549,8 @@
             selectedObject = null;
             transformControl.detach();
             document.getElementById('selection-hint').classList.remove('hidden');
+            if (collisionHelper) collisionHelper.visible = false; // 取消選取時一併隱藏碰撞線
         }
-
 
         // --- 工具列對齊功能實作 ---
         function snapToFloor() {
@@ -492,60 +563,6 @@
             const lowestY = box.min.y;
             // 將物件向下/上平移，使最低點接觸 Y=0 基準面
             selectedObject.position.y -= lowestY;
-        }
-
-        // 新增：吸附最近物件的功能
-        function snapToNearestObject() {
-            if (!selectedObject) {
-                alertHint(); return;
-            }
-            if (assembledObjects.length < 2) return; // 需要至少有另一個物件才能吸附
-
-            let nearestObj = null;
-            let minCenterDist = Infinity;
-            
-            const selBox = new THREE.Box3().setFromObject(selectedObject);
-            const selCenter = new THREE.Vector3();
-            selBox.getCenter(selCenter);
-
-            // 1. 找出中心點距離最近的另一個物件
-            assembledObjects.forEach(obj => {
-                if (obj === selectedObject) return;
-                const box = new THREE.Box3().setFromObject(obj);
-                const center = new THREE.Vector3();
-                box.getCenter(center);
-                const dist = selCenter.distanceTo(center);
-                if (dist < minCenterDist) {
-                    minCenterDist = dist;
-                    nearestObj = obj;
-                }
-            });
-
-            if (nearestObj) {
-                const targetBox = new THREE.Box3().setFromObject(nearestObj);
-                const sBox = new THREE.Box3().setFromObject(selectedObject);
-
-                // 2. 計算 6 個面的潛在吸附位移量 (對齊 Bounding Box 的極值邊界)
-                const offsets = [
-                    { axis: 'x', value: targetBox.max.x - sBox.min.x }, // 自己的左側面貼對方的右側面
-                    { axis: 'x', value: targetBox.min.x - sBox.max.x }, // 自己的右側面貼對方的左側面
-                    { axis: 'y', value: targetBox.max.y - sBox.min.y }, // 自己的底面貼對方的頂面
-                    { axis: 'y', value: targetBox.min.y - sBox.max.y }, // 自己的頂面貼對方的底面
-                    { axis: 'z', value: targetBox.max.z - sBox.min.z }, // 自己的前面貼對方的後面
-                    { axis: 'z', value: targetBox.min.z - sBox.max.z }  // 自己的後面貼對方的前面
-                ];
-
-                // 3. 找出需要移動的絕對距離最短的那一面
-                let bestOffset = offsets[0];
-                for(let i = 1; i < offsets.length; i++) {
-                    if (Math.abs(offsets[i].value) < Math.abs(bestOffset.value)) {
-                        bestOffset = offsets[i];
-                    }
-                }
-
-                // 4. 套用該位移量，使其精準吸附
-                selectedObject.position[bestOffset.axis] += bestOffset.value;
-            }
         }
 
         function centerObject() {
@@ -582,8 +599,9 @@
             newMesh.position.y += 50;
             newMesh.rotation.copy(selectedObject.rotation);
             
-            // 給予自訂屬性以便識別
-            newMesh.userData = { isAssemblyPart: true };
+            // 複製存檔所需的原始參數
+            newMesh.userData = JSON.parse(JSON.stringify(selectedObject.userData));
+            newMesh.userData.isAssemblyPart = true;
 
             rightScene.add(newMesh);
             assembledObjects.push(newMesh);
@@ -626,6 +644,129 @@
             setTimeout(() => hint.style.opacity = '1', 100);
         }
 
+        // ================= Firebase 雲端存檔功能 =================
+        async function initFirebase() {
+            if (!firebaseConfig) return;
+            try {
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                // 優先使用平台提供的驗證權杖
+                if (typeof __initial_auth_token !== 'undefined') {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+                userId = auth.currentUser?.uid;
+                
+                // 登入成功後，自動載入上次的存檔進度
+                await loadWorkspace();
+            } catch (error) {
+                console.error("Firebase 初始化失敗:", error);
+            }
+        }
+
+        async function saveWorkspace() {
+            const btn = document.getElementById('btn-save');
+            if (!userId || !db) {
+                btn.innerText = '無法連線至雲端';
+                setTimeout(() => { btn.innerText = '儲存雲端進度'; }, 2000);
+                return;
+            }
+            
+            btn.innerText = '儲存中...';
+            btn.classList.add('opacity-75');
+            
+            try {
+                // 將所有組裝的零件轉換為可儲存的 JSON 格式
+                const data = assembledObjects.map(obj => ({
+                    type: obj.userData.type,
+                    params: obj.userData.params,
+                    color: obj.userData.color,
+                    position: { x: obj.position.x, y: obj.position.y, z: obj.position.z },
+                    rotation: { x: obj.rotation.x, y: obj.rotation.y, z: obj.rotation.z }
+                }));
+                
+                const docRef = doc(db, 'artifacts', appId, 'users', userId, 'workspace', 'current');
+                await setDoc(docRef, { 
+                    parts: JSON.stringify(data), 
+                    updatedAt: new Date().toISOString() 
+                });
+                
+                btn.innerText = '儲存成功！';
+                btn.classList.remove('opacity-75', 'bg-[#1473e6]');
+                btn.classList.add('bg-green-600');
+                
+                setTimeout(() => { 
+                    btn.innerText = '儲存雲端進度'; 
+                    btn.classList.remove('bg-green-600');
+                    btn.classList.add('bg-[#1473e6]');
+                }, 2500);
+            } catch(error) {
+                console.error("儲存失敗:", error);
+                btn.innerText = '儲存失敗';
+                setTimeout(() => { btn.innerText = '儲存雲端進度'; btn.classList.remove('opacity-75'); }, 2000);
+            }
+        }
+
+        async function loadWorkspace() {
+            if (!userId || !db) return;
+            try {
+                const docRef = doc(db, 'artifacts', appId, 'users', userId, 'workspace', 'current');
+                const docSnap = await getDoc(docRef);
+                
+                if (docSnap.exists()) {
+                    const data = JSON.parse(docSnap.data().parts);
+                    
+                    // 1. 清除當前場景中的所有零件
+                    while(assembledObjects.length > 0) {
+                        selectedObject = assembledObjects[0];
+                        deleteSelectedObject();
+                    }
+                    
+                    // 2. 依照存檔資料重建模型
+                    data.forEach(item => {
+                        let geometry;
+                        if (item.type === 'box') {
+                            geometry = new THREE.BoxGeometry(item.params.w, item.params.h, item.params.d);
+                        } else if (item.type === 'cylinder') {
+                            geometry = new THREE.CylinderGeometry(item.params.r, item.params.r, item.params.h, 32);
+                        } else if (item.type === 'sphere') {
+                            geometry = new THREE.SphereGeometry(item.params.r, 32, 16);
+                        }
+                        
+                        const material = new THREE.MeshStandardMaterial({ 
+                            color: new THREE.Color(item.color), 
+                            roughness: 0.5, metalness: 0.1 
+                        });
+                        
+                        const mesh = new THREE.Mesh(geometry, material);
+                        
+                        const edges = new THREE.EdgesGeometry(geometry);
+                        const lineMat = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 1, opacity: 0.5, transparent: true });
+                        mesh.add(new THREE.LineSegments(edges, lineMat));
+                        
+                        mesh.position.set(item.position.x, item.position.y, item.position.z);
+                        mesh.rotation.set(item.rotation.x, item.rotation.y, item.rotation.z);
+                        
+                        mesh.userData = { 
+                            isAssemblyPart: true,
+                            type: item.type,
+                            params: item.params,
+                            color: item.color
+                        };
+                        
+                        rightScene.add(mesh);
+                        assembledObjects.push(mesh);
+                    });
+                    console.log("✅ 成功載入雲端存檔");
+                }
+            } catch(error) {
+                console.error("載入存檔失敗:", error);
+            }
+        }
+
         // 新增：統一更新吸附參數邏輯 (依照 Shift 狀態與網格狀態)
         function updateTransformSnaps() {
             if (transformControl.getMode() === 'rotate') {
@@ -666,8 +807,9 @@
                 input.addEventListener('input', updatePreviewShape);
             });
 
-            // 2. 加入組裝區按鈕
+            // 2. 加入組裝區按鈕與存檔按鈕
             document.getElementById('add-to-assembly-btn').addEventListener('click', addToAssembly);
+            document.getElementById('btn-save').addEventListener('click', saveWorkspace);
 
             // 3. 右側工具列按鈕
             const btnTrans = document.getElementById('mode-translate');
@@ -700,7 +842,6 @@
             });
 
             document.getElementById('tool-align-floor').addEventListener('click', snapToFloor);
-            document.getElementById('tool-snap-nearest').addEventListener('click', snapToNearestObject); // 綁定新按鈕
             document.getElementById('tool-align-center').addEventListener('click', centerObject);
             document.getElementById('tool-duplicate').addEventListener('click', duplicateSelectedObject); // 綁定複製按鈕
             document.getElementById('tool-delete').addEventListener('click', deleteSelectedObject);
