@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D 零件繪製與組裝系統</title>
+    
+    <!-- 引入 Tailwind CSS 用於快速構建 UI -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <style>
+        body {
+            background-color: #1e1e1e;
+            color: #d1d1d1;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            overflow: hidden;
+            user-select: none; /* 防止不必要的文字選取干擾拖曳 */
+        }
+        
+        /* 自定義捲軸 */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #252525; }
+        ::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #777; }
+
+        /* 輸入框與下拉選單樣式 */
+        select, input[type="number"] {
+            background-color: #323232;
+            border: 1px solid #444;
+            color: #fff;
+            transition: all 0.2s ease;
+            outline: none;
+        }
+        select:focus, input[type="number"]:focus {
+            border-color: #1473e6;
+            background-color: #383838;
+        }
+        input[type=number]::-webkit-inner-spin-button, 
+        input[type=number]::-webkit-outer-spin-button { 
+            -webkit-appearance: none; margin: 0; 
+        }
+
+        /* 按鈕樣式 */
+        .btn-primary {
+            background-color: #1473e6;
+            color: white;
+            transition: background-color 0.2s;
+        }
+        .btn-primary:hover { background-color: #0d66d0; }
+        .btn-primary:active { background-color: #0a53aa; }
+
+        .btn-tool {
+            background-color: #333;
+            border: 1px solid #555;
+            color: #ddd;
+            transition: all 0.2s;
+        }
+        .btn-tool:hover { background-color: #444; color: #fff; }
+        .btn-tool.active { background-color: #1473e6; border-color: #1473e6; }
+        .btn-danger:hover { background-color: #dc2626; border-color: #dc2626; color: white;}
+    </style>
+
+    <!-- 使用 Import Map 載入 Three.js 及所需模組 -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body class="h-screen w-screen flex flex-col">
+
+    <!-- 頂部導覽列 -->
+    <header class="h-10 border-b border-[#111] bg-[#2a2a2a] flex items-center px-4 shadow-sm z-20 shrink-0">
+        <h1 class="text-xs font-semibold tracking-wider text-gray-200">3D PART BUILDER & ASSEMBLY</h1>
+        <div class="ml-auto text-[11px] text-gray-500 flex gap-4">
+            <span>左鍵：旋轉/選取</span>
+            <span>中鍵：平移</span>
+            <span>滾輪：縮放</span>
+        </div>
+    </header>
+
+    <main class="flex-1 flex overflow-hidden">
+        
+        <!-- ================= 左側面板：零件繪製區 ================= -->
+        <aside id="left-sidebar" class="w-[380px] ml-0 transition-all duration-300 border-r border-[#111] bg-[#252525] flex flex-col z-20 shadow-[4px_0_15px_rgba(0,0,0,0.3)] shrink-0 relative">
+            
+            <!-- 收合/展開按鈕 -->
+            <button id="toggle-sidebar" class="absolute -right-6 top-1/2 -translate-y-1/2 w-6 h-16 bg-[#2a2a2a] border border-[#111] border-l-0 rounded-r flex justify-center items-center cursor-pointer hover:bg-[#333] text-gray-400 z-50 shadow-md">
+                <span id="toggle-icon" class="text-xs">◀</span>
+            </button>
+
+            <div class="p-4 border-b border-[#333] bg-[#2a2a2a]">
+                <h2 class="text-sm font-medium text-white mb-1">1. 繪製零件</h2>
+                <p class="text-xs text-gray-400">選擇形狀並設定數值，然後加入組裝區。</p>
+            </div>
+
+            <!-- 參數表單 -->
+            <div class="p-4 space-y-4 border-b border-[#333]">
+                
+                <!-- 形狀選擇 -->
+                <div class="flex flex-col gap-1.5">
+                    <label class="text-xs text-gray-300">立體圖形總類</label>
+                    <select id="shape-type" class="w-full h-8 px-2 rounded text-sm">
+                        <option value="box">矩形方塊 (Box)</option>
+                        <option value="cylinder">圓柱體 (Cylinder)</option>
+                        <option value="sphere">圓球體 (Sphere)</option>
+                    </select>
+                </div>
+
+                <!-- 矩形參數區 -->
+                <div id="param-box" class="space-y-3">
+                    <div class="flex flex-col gap-3">
+                        <div class="w-full flex flex-col gap-1"><label class="text-[10px] text-gray-400">寬度 (X)</label><input type="number" id="box-w" value="100" min="1" class="h-7 px-2 rounded text-xs"></div>
+                        <div class="w-full flex flex-col gap-1"><label class="text-[10px] text-gray-400">高度 (Y)</label><input type="number" id="box-h" value="100" min="1" class="h-7 px-2 rounded text-xs"></div>
+                        <div class="w-full flex flex-col gap-1"><label class="text-[10px] text-gray-400">深度 (Z)</label><input type="number" id="box-d" value="100" min="1" class="h-7 px-2 rounded text-xs"></div>
+                    </div>
+                </div>
+
+                <!-- 圓柱參數區 (預設隱藏) -->
+                <div id="param-cylinder" class="space-y-3 hidden">
+                    <div class="flex flex-col gap-3">
+                        <div class="w-full flex flex-col gap-1"><label class="text-[10px] text-gray-400">半徑 (Radius)</label><input type="number" id="cyl-r" value="50" min="1" class="h-7 px-2 rounded text-xs"></div>
+                        <div class="w-full flex flex-col gap-1"><label class="text-[10px] text-gray-400">高度 (Height)</label><input type="number" id="cyl-h" value="150" min="1" class="h-7 px-2 rounded text-xs"></div>
+                    </div>
+                </div>
+
+                <!-- 圓球參數區 (預設隱藏) -->
+                <div id="param-sphere" class="space-y-3 hidden">
+                    <div class="flex flex-col gap-3">
+                        <div class="w-full flex flex-col gap-1"><label class="text-[10px] text-gray-400">半徑 (Radius)</label><input type="number" id="sph-r" value="60" min="1" class="h-7 px-2 rounded text-xs"></div>
+                    </div>
+                </div>
+                
+                <div class="flex flex-col gap-1.5 pt-2">
+                    <label class="text-[10px] text-gray-400">零件顏色 (分類辨識用)</label>
+                    <input type="color" id="part-color" value="#888888" class="w-full h-8 rounded cursor-pointer bg-transparent border-none p-0">
+                </div>
+
+            </div>
+
+            <!-- 左側小預覽視窗 -->
+            <div class="flex-1 relative bg-[#1a1a1a] flex flex-col">
+                <div class="absolute top-2 left-2 text-[10px] text-gray-500 z-10">零件預覽</div>
+                <div id="left-canvas-container" class="w-full h-full"></div>
+            </div>
+
+            <!-- 核心動作按鈕 -->
+            <div class="p-4 border-t border-[#333] bg-[#2a2a2a]">
+                <button id="add-to-assembly-btn" class="btn-primary w-full py-2.5 rounded text-sm font-medium tracking-wide shadow-md">
+                    加入右方組裝視窗 ⭢
+                </button>
+            </div>
+        </aside>
+
+        <!-- ================= 右側面板：主組裝區 ================= -->
+        <section class="flex-1 relative flex flex-col bg-[#141414]">
+            
+            <!-- 組裝工具列 -->
+            <div class="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex gap-3 bg-[#252525]/90 backdrop-blur px-4 py-2.5 rounded-lg border border-[#333] shadow-lg">
+                <!-- 操作模式 -->
+                <button id="mode-translate" class="btn-tool active text-sm px-4 py-1.5 rounded whitespace-nowrap">移動 (T)</button>
+                <button id="mode-rotate" class="btn-tool text-sm px-4 py-1.5 rounded whitespace-nowrap">旋轉 (R)</button>
+                
+                <div class="w-px h-7 bg-[#444] self-center mx-1"></div>
+                
+                <!-- 對齊工具 -->
+                <button id="tool-snap-grid" class="btn-tool text-sm px-4 py-1.5 rounded whitespace-nowrap" title="拖曳時按固定網格移動">網格吸附: 關</button>
+                <button id="tool-align-floor" class="btn-tool text-sm px-4 py-1.5 rounded whitespace-nowrap" title="將選取的零件底部貼齊基準面">貼齊地面</button>
+                <button id="tool-snap-nearest" class="btn-tool text-sm px-4 py-1.5 rounded whitespace-nowrap" title="將選取物件吸附至最近的物件表面">吸附最近物件</button>
+                <button id="tool-align-center" class="btn-tool text-sm px-4 py-1.5 rounded whitespace-nowrap" title="將選取的零件移至場景中心">置中對齊</button>
+                
+                <div class="w-px h-7 bg-[#444] self-center mx-1"></div>
+                
+                <!-- 新增複製按鈕 -->
+                <button id="tool-duplicate" class="btn-tool text-sm px-4 py-1.5 rounded whitespace-nowrap">複製零件 (C)</button>
+                
+                <button id="tool-delete" class="btn-tool btn-danger text-sm px-4 py-1.5 rounded whitespace-nowrap">刪除零件 (Del)</button>
+            </div>
+
+            <!-- 未選取提示 -->
+            <div id="selection-hint" class="absolute bottom-4 right-4 text-xs text-yellow-500 bg-[#222] px-3 py-1.5 rounded border border-[#444] z-10 hidden">
+                尚未選取任何零件 (請點擊畫面中的模型)
+            </div>
+            
+            <!-- 旋轉角度提示 (新增) -->
+            <div id="rotation-tooltip" class="absolute top-16 left-1/2 -translate-x-1/2 bg-[#1473e6]/90 backdrop-blur text-white px-4 py-1.5 rounded shadow-lg text-xs font-mono hidden z-20 pointer-events-none border border-[#3b82f6]">
+                X: 0° | Y: 0° | Z: 0°
+            </div>
+
+            <!-- 主 3D 畫布容器 -->
+            <div id="right-canvas-container" class="w-full h-full outline-none" tabindex="0"></div>
+        </section>
+
+    </main>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { TransformControls } from 'three/addons/controls/TransformControls.js';
+
+        // --- 全域變數定義 ---
+        
+        // 左側 (預覽區)
+        let leftScene, leftCamera, leftRenderer, leftControls;
+        let previewMesh; // 目前正在編輯預覽的網格模型
+
+        // 右側 (組裝區)
+        let rightScene, rightCamera, rightRenderer, rightControls;
+        let transformControl; // 用於拖曳/旋轉物體的控制軸
+        let raycaster, mouse;
+        let assembledObjects = []; // 儲存所有加入到右側的零件
+        let selectedObject = null; // 目前選取準備操作的零件
+        let isGridSnapEnabled = false;
+        let isShiftDown = false; // 新增：追蹤 Shift 鍵狀態
+
+        // --- 初始化系統 ---
+        function initSystem() {
+            initLeftScene();
+            initRightScene();
+            setupUIEventListeners();
+            
+            // 生成初始的預覽零件
+            updatePreviewShape();
+
+            // 啟動統一的動畫渲染迴圈
+            rendererLoop();
+            
+            // 使用 ResizeObserver 確保側邊欄收合動畫時畫布能即時自適應
+            const resizeObserver = new ResizeObserver(() => {
+                // 使用 requestAnimationFrame 包裝，避免 ResizeObserver loop limit exceeded 報錯
+                window.requestAnimationFrame(() => {
+                    onWindowResize();
+                });
+            });
+            resizeObserver.observe(document.getElementById('right-canvas-container'));
+            resizeObserver.observe(document.getElementById('left-canvas-container'));
+            
+            // 視窗縮放處理
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function initLeftScene() {
+            const container = document.getElementById('left-canvas-container');
+            leftScene = new THREE.Scene();
+            leftScene.background = new THREE.Color(0x1a1a1a);
+            
+            // 基礎網格 (小)
+            leftScene.add(new THREE.GridHelper(500, 20, 0x444444, 0x222222));
+
+            leftCamera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 1, 2000);
+            leftCamera.position.set(200, 200, 250);
+
+            leftRenderer = new THREE.WebGLRenderer({ antialias: true });
+            leftRenderer.setSize(container.clientWidth, container.clientHeight);
+            leftRenderer.setPixelRatio(window.devicePixelRatio);
+            container.appendChild(leftRenderer.domElement);
+
+            leftControls = new OrbitControls(leftCamera, leftRenderer.domElement);
+            leftControls.enableDamping = true;
+            leftControls.dampingFactor = 0.1;
+
+            // 打光
+            leftScene.add(new THREE.AmbientLight(0xffffff, 0.6));
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(100, 200, 50);
+            leftScene.add(dirLight);
+        }
+
+        function initRightScene() {
+            const container = document.getElementById('right-canvas-container');
+            rightScene = new THREE.Scene();
+            rightScene.background = new THREE.Color(0x141414);
+            
+            // 主工作區網格 (大)
+            rightScene.add(new THREE.GridHelper(2000, 50, 0x555555, 0x2a2a2a));
+            // 坐標原點標示
+            rightScene.add(new THREE.AxesHelper(100));
+
+            rightCamera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 1, 5000);
+            rightCamera.position.set(500, 400, 600);
+
+            rightRenderer = new THREE.WebGLRenderer({ antialias: true });
+            rightRenderer.setSize(container.clientWidth, container.clientHeight);
+            rightRenderer.setPixelRatio(window.devicePixelRatio);
+            container.appendChild(rightRenderer.domElement);
+
+            // 右側視角控制器
+            rightControls = new OrbitControls(rightCamera, rightRenderer.domElement);
+            rightControls.enableDamping = true;
+            rightControls.dampingFactor = 0.1;
+
+            // 打光
+            rightScene.add(new THREE.AmbientLight(0xffffff, 0.7));
+            const dirLight1 = new THREE.DirectionalLight(0xffffff, 0.6);
+            dirLight1.position.set(500, 1000, 500);
+            rightScene.add(dirLight1);
+            const dirLight2 = new THREE.DirectionalLight(0xffffff, 0.3);
+            dirLight2.position.set(-500, 500, -500);
+            rightScene.add(dirLight2);
+
+            // ================= 組裝互動核心：TransformControls =================
+            transformControl = new TransformControls(rightCamera, rightRenderer.domElement);
+            // 當使用工具軸拖曳物體時，暫停 OrbitControls 的視角旋轉，避免衝突
+            transformControl.addEventListener('dragging-changed', function (event) {
+                rightControls.enabled = !event.value;
+                if (!event.value) {
+                    // 拖曳結束時隱藏角度提示
+                    document.getElementById('rotation-tooltip').classList.add('hidden');
+                }
+            });
+            
+            // 新增：監聽變化以顯示旋轉角度
+            transformControl.addEventListener('change', function () {
+                if (transformControl.dragging && transformControl.getMode() === 'rotate' && selectedObject) {
+                    const tooltip = document.getElementById('rotation-tooltip');
+                    tooltip.classList.remove('hidden');
+                    
+                    // 將弧度轉換為度數並取整數，避免 -0 出現
+                    let rx = Math.round(THREE.MathUtils.radToDeg(selectedObject.rotation.x));
+                    let ry = Math.round(THREE.MathUtils.radToDeg(selectedObject.rotation.y));
+                    let rz = Math.round(THREE.MathUtils.radToDeg(selectedObject.rotation.z));
+                    rx = rx === -0 ? 0 : rx;
+                    ry = ry === -0 ? 0 : ry;
+                    rz = rz === -0 ? 0 : rz;
+                    
+                    tooltip.innerText = `X: ${rx}° | Y: ${ry}° | Z: ${rz}°`;
+                }
+            });
+
+            rightScene.add(transformControl);
+
+            // ================= 選取邏輯：Raycaster =================
+            raycaster = new THREE.Raycaster();
+            mouse = new THREE.Vector2();
+
+            // 監聽右側畫布的點擊事件來選取零件
+            rightRenderer.domElement.addEventListener('pointerdown', onPointerDownRightCanvas);
+        }
+
+        // --- 左側邏輯：生成與更新預覽圖形 ---
+        function updatePreviewShape() {
+            // 移除舊預覽
+            if (previewMesh) {
+                leftScene.remove(previewMesh);
+                previewMesh.geometry.dispose();
+                previewMesh.material.dispose();
+                // 確保同時釋放附加的子物件 (白色外框線) 的記憶體
+                if (previewMesh.children.length > 0) {
+                    previewMesh.children.forEach(child => {
+                        if (child.geometry) child.geometry.dispose();
+                        if (child.material) child.material.dispose();
+                    });
+                }
+            }
+
+            const type = document.getElementById('shape-type').value;
+            const colorHex = document.getElementById('part-color').value;
+            let geometry;
+
+            // 根據選擇讀取對應參數並建立幾何體
+            if (type === 'box') {
+                const w = parseFloat(document.getElementById('box-w').value) || 100;
+                const h = parseFloat(document.getElementById('box-h').value) || 100;
+                const d = parseFloat(document.getElementById('box-d').value) || 100;
+                geometry = new THREE.BoxGeometry(w, h, d);
+            } else if (type === 'cylinder') {
+                const r = parseFloat(document.getElementById('cyl-r').value) || 50;
+                const h = parseFloat(document.getElementById('cyl-h').value) || 150;
+                geometry = new THREE.CylinderGeometry(r, r, h, 32);
+            } else if (type === 'sphere') {
+                const r = parseFloat(document.getElementById('sph-r').value) || 60;
+                geometry = new THREE.SphereGeometry(r, 32, 16);
+            }
+
+            // 建立材質 (帶有選定的顏色)
+            const material = new THREE.MeshStandardMaterial({ 
+                color: new THREE.Color(colorHex), 
+                roughness: 0.5,
+                metalness: 0.1
+            });
+            
+            previewMesh = new THREE.Mesh(geometry, material);
+
+            // 加入白色的 CAD 風格外框線
+            const edges = new THREE.EdgesGeometry(geometry);
+            const lineMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 1, opacity: 0.3, transparent: true });
+            const lineSegment = new THREE.LineSegments(edges, lineMaterial);
+            previewMesh.add(lineSegment); // 將線條加為 Mesh 的子物件，移動時會一起動
+
+            // 將預覽物件置中
+            leftScene.add(previewMesh);
+        }
+
+        // --- 核心動作：將左側預覽加入到右側組裝區 ---
+        function addToAssembly() {
+            if (!previewMesh) return;
+
+            // 複製幾何體與材質，確保每個零件獨立
+            const newGeo = previewMesh.geometry.clone();
+            const newMat = previewMesh.material.clone();
+            const newMesh = new THREE.Mesh(newGeo, newMat);
+
+            // 同樣複製外框線
+            const edges = new THREE.EdgesGeometry(newGeo);
+            const lineMat = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 1, opacity: 0.5, transparent: true });
+            const newLines = new THREE.LineSegments(edges, lineMat);
+            newMesh.add(newLines);
+
+            // 將新零件放置在右側場景的原點上方，提示使用者剛加入
+            newMesh.position.set(0, 100, 0); 
+            
+            // 給予自訂屬性以便識別
+            newMesh.userData = { isAssemblyPart: true };
+
+            rightScene.add(newMesh);
+            assembledObjects.push(newMesh);
+
+            // 加入後自動選取它，方便直接開始移動
+            selectObject(newMesh);
+            
+            // 讓右側畫布取得焦點，方便接收鍵盤快捷鍵
+            document.getElementById('right-canvas-container').focus();
+        }
+
+        // --- 右側互動邏輯：點選與選取 ---
+        function onPointerDownRightCanvas(event) {
+            // 確保是在右側容器內點擊
+            const container = document.getElementById('right-canvas-container');
+            const rect = container.getBoundingClientRect();
+            
+            // 計算正規化設備坐標 (NDC)
+            mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+            mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, rightCamera);
+
+            // 只與已加入的零件做射線檢測
+            const intersects = raycaster.intersectObjects(assembledObjects, false);
+
+            if (intersects.length > 0) {
+                // 如果點擊到 TransformControls 的軸，不要觸發重新選取
+                if(transformControl.dragging) return;
+                
+                selectObject(intersects[0].object);
+            } else {
+                // 如果點擊空白處，取消選取
+                if(!transformControl.dragging) {
+                    deselectObject();
+                }
+            }
+        }
+
+        function selectObject(mesh) {
+            if (selectedObject === mesh) return;
+
+            // 恢復前一個選取物件的視覺狀態
+            if (selectedObject) {
+                selectedObject.material.emissive.setHex(0x000000);
+            }
+
+            selectedObject = mesh;
+            // 給予微光效果表示被選取
+            selectedObject.material.emissive.setHex(0x222222); 
+            
+            // 將控制軸綁定到該物件
+            transformControl.attach(selectedObject);
+            document.getElementById('selection-hint').classList.add('hidden');
+        }
+
+        function deselectObject() {
+            if (selectedObject) {
+                selectedObject.material.emissive.setHex(0x000000);
+            }
+            selectedObject = null;
+            transformControl.detach();
+            document.getElementById('selection-hint').classList.remove('hidden');
+        }
+
+
+        // --- 工具列對齊功能實作 ---
+        function snapToFloor() {
+            if (!selectedObject) {
+                alertHint(); return;
+            }
+            // 計算物件目前的包圍盒 (Bounding Box)
+            const box = new THREE.Box3().setFromObject(selectedObject);
+            // 找出最底部的 Y 座標
+            const lowestY = box.min.y;
+            // 將物件向下/上平移，使最低點接觸 Y=0 基準面
+            selectedObject.position.y -= lowestY;
+        }
+
+        // 新增：吸附最近物件的功能
+        function snapToNearestObject() {
+            if (!selectedObject) {
+                alertHint(); return;
+            }
+            if (assembledObjects.length < 2) return; // 需要至少有另一個物件才能吸附
+
+            let nearestObj = null;
+            let minCenterDist = Infinity;
+            
+            const selBox = new THREE.Box3().setFromObject(selectedObject);
+            const selCenter = new THREE.Vector3();
+            selBox.getCenter(selCenter);
+
+            // 1. 找出中心點距離最近的另一個物件
+            assembledObjects.forEach(obj => {
+                if (obj === selectedObject) return;
+                const box = new THREE.Box3().setFromObject(obj);
+                const center = new THREE.Vector3();
+                box.getCenter(center);
+                const dist = selCenter.distanceTo(center);
+                if (dist < minCenterDist) {
+                    minCenterDist = dist;
+                    nearestObj = obj;
+                }
+            });
+
+            if (nearestObj) {
+                const targetBox = new THREE.Box3().setFromObject(nearestObj);
+                const sBox = new THREE.Box3().setFromObject(selectedObject);
+
+                // 2. 計算 6 個面的潛在吸附位移量 (對齊 Bounding Box 的極值邊界)
+                const offsets = [
+                    { axis: 'x', value: targetBox.max.x - sBox.min.x }, // 自己的左側面貼對方的右側面
+                    { axis: 'x', value: targetBox.min.x - sBox.max.x }, // 自己的右側面貼對方的左側面
+                    { axis: 'y', value: targetBox.max.y - sBox.min.y }, // 自己的底面貼對方的頂面
+                    { axis: 'y', value: targetBox.min.y - sBox.max.y }, // 自己的頂面貼對方的底面
+                    { axis: 'z', value: targetBox.max.z - sBox.min.z }, // 自己的前面貼對方的後面
+                    { axis: 'z', value: targetBox.min.z - sBox.max.z }  // 自己的後面貼對方的前面
+                ];
+
+                // 3. 找出需要移動的絕對距離最短的那一面
+                let bestOffset = offsets[0];
+                for(let i = 1; i < offsets.length; i++) {
+                    if (Math.abs(offsets[i].value) < Math.abs(bestOffset.value)) {
+                        bestOffset = offsets[i];
+                    }
+                }
+
+                // 4. 套用該位移量，使其精準吸附
+                selectedObject.position[bestOffset.axis] += bestOffset.value;
+            }
+        }
+
+        function centerObject() {
+            if (!selectedObject) {
+                alertHint(); return;
+            }
+            // 將 X 和 Z 歸零，Y 保持不變
+            selectedObject.position.x = 0;
+            selectedObject.position.z = 0;
+        }
+
+        // 新增：複製選取物件的功能
+        function duplicateSelectedObject() {
+            if (!selectedObject) {
+                alertHint(); return;
+            }
+
+            // 複製幾何體與材質，確保每個零件獨立
+            const newGeo = selectedObject.geometry.clone();
+            const newMat = selectedObject.material.clone();
+            // 重置發光屬性（避免將選取狀態的高光也複製過去）
+            newMat.emissive.setHex(0x000000); 
+            const newMesh = new THREE.Mesh(newGeo, newMat);
+
+            // 同樣複製外框線
+            const edges = new THREE.EdgesGeometry(newGeo);
+            const lineMat = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 1, opacity: 0.5, transparent: true });
+            const newLines = new THREE.LineSegments(edges, lineMat);
+            newMesh.add(newLines);
+
+            // 設定新物件的初始位置與旋轉 (稍微往右上方偏移 50 單位，配合預設網格)
+            newMesh.position.copy(selectedObject.position);
+            newMesh.position.x += 50;
+            newMesh.position.y += 50;
+            newMesh.rotation.copy(selectedObject.rotation);
+            
+            // 給予自訂屬性以便識別
+            newMesh.userData = { isAssemblyPart: true };
+
+            rightScene.add(newMesh);
+            assembledObjects.push(newMesh);
+
+            // 複製完成後，自動將控制權轉移給新物件
+            selectObject(newMesh);
+        }
+
+        function deleteSelectedObject() {
+            if (!selectedObject) return;
+            
+            rightScene.remove(selectedObject);
+            transformControl.detach();
+            
+            // 從陣列中移除
+            const index = assembledObjects.indexOf(selectedObject);
+            if (index > -1) {
+                assembledObjects.splice(index, 1);
+            }
+            
+            // 釋放記憶體
+            selectedObject.geometry.dispose();
+            selectedObject.material.dispose();
+            // 一併釋放附屬的子物件 (白色邊框)
+            if (selectedObject.children.length > 0) {
+                selectedObject.children.forEach(child => {
+                    if (child.geometry) child.geometry.dispose();
+                    if (child.material) child.material.dispose();
+                });
+            }
+            
+            selectedObject = null;
+        }
+
+        function alertHint() {
+            const hint = document.getElementById('selection-hint');
+            hint.classList.remove('hidden');
+            // 閃爍一下
+            hint.style.opacity = '0.5';
+            setTimeout(() => hint.style.opacity = '1', 100);
+        }
+
+        // 新增：統一更新吸附參數邏輯 (依照 Shift 狀態與網格狀態)
+        function updateTransformSnaps() {
+            if (transformControl.getMode() === 'rotate') {
+                if (isShiftDown) {
+                    // 按住 Shift 強制鎖定 30 度
+                    transformControl.setRotationSnap(THREE.MathUtils.degToRad(30));
+                } else if (isGridSnapEnabled) {
+                    transformControl.setRotationSnap(THREE.MathUtils.degToRad(15));
+                } else {
+                    transformControl.setRotationSnap(null);
+                }
+            } else if (transformControl.getMode() === 'translate') {
+                if (isGridSnapEnabled) {
+                    transformControl.setTranslationSnap(50);
+                } else {
+                    transformControl.setTranslationSnap(null);
+                }
+            }
+        }
+
+        // --- UI 事件綁定 ---
+        function setupUIEventListeners() {
+            
+            // 1. 左側表單切換邏輯
+            const shapeSelect = document.getElementById('shape-type');
+            shapeSelect.addEventListener('change', (e) => {
+                const val = e.target.value;
+                document.getElementById('param-box').classList.add('hidden');
+                document.getElementById('param-cylinder').classList.add('hidden');
+                document.getElementById('param-sphere').classList.add('hidden');
+                document.getElementById(`param-${val}`).classList.remove('hidden');
+                updatePreviewShape();
+            });
+
+            // 綁定所有左側輸入框的 input 事件，即時更新預覽
+            const inputs = document.querySelectorAll('aside input');
+            inputs.forEach(input => {
+                input.addEventListener('input', updatePreviewShape);
+            });
+
+            // 2. 加入組裝區按鈕
+            document.getElementById('add-to-assembly-btn').addEventListener('click', addToAssembly);
+
+            // 3. 右側工具列按鈕
+            const btnTrans = document.getElementById('mode-translate');
+            const btnRot = document.getElementById('mode-rotate');
+            
+            btnTrans.addEventListener('click', () => {
+                transformControl.setMode('translate');
+                btnTrans.classList.add('active');
+                btnRot.classList.remove('active');
+                updateTransformSnaps(); // 確保模式切換時套用正確的 Snap
+            });
+            btnRot.addEventListener('click', () => {
+                transformControl.setMode('rotate');
+                btnRot.classList.add('active');
+                btnTrans.classList.remove('active');
+                updateTransformSnaps(); // 確保模式切換時套用正確的 Snap
+            });
+
+            const btnSnap = document.getElementById('tool-snap-grid');
+            btnSnap.addEventListener('click', () => {
+                isGridSnapEnabled = !isGridSnapEnabled;
+                if (isGridSnapEnabled) {
+                    btnSnap.classList.add('active');
+                    btnSnap.innerText = '網格吸附: 開';
+                } else {
+                    btnSnap.classList.remove('active');
+                    btnSnap.innerText = '網格吸附: 關';
+                }
+                updateTransformSnaps(); // 更新 Snap 狀態
+            });
+
+            document.getElementById('tool-align-floor').addEventListener('click', snapToFloor);
+            document.getElementById('tool-snap-nearest').addEventListener('click', snapToNearestObject); // 綁定新按鈕
+            document.getElementById('tool-align-center').addEventListener('click', centerObject);
+            document.getElementById('tool-duplicate').addEventListener('click', duplicateSelectedObject); // 綁定複製按鈕
+            document.getElementById('tool-delete').addEventListener('click', deleteSelectedObject);
+
+            // 4. 側邊欄收合邏輯
+            const sidebar = document.getElementById('left-sidebar');
+            const toggleBtn = document.getElementById('toggle-sidebar');
+            const toggleIcon = document.getElementById('toggle-icon');
+            let isSidebarOpen = true;
+
+            toggleBtn.addEventListener('click', () => {
+                isSidebarOpen = !isSidebarOpen;
+                if (isSidebarOpen) {
+                    sidebar.classList.remove('ml-[-380px]');
+                    toggleIcon.innerText = '◀';
+                } else {
+                    sidebar.classList.add('ml-[-380px]');
+                    toggleIcon.innerText = '▶';
+                }
+            });
+
+            // 鍵盤快捷鍵
+            window.addEventListener('keydown', (e) => {
+                // 防呆機制：如果在 input 輸入框內打字（例如輸入尺寸或色碼），不要觸發快捷鍵
+                if (e.target.tagName.toLowerCase() === 'input') return;
+
+                if (e.key === 'Delete' || e.key === 'Backspace') {
+                    deleteSelectedObject();
+                } else if (e.key.toLowerCase() === 't') {
+                    btnTrans.click();
+                } else if (e.key.toLowerCase() === 'r') {
+                    btnRot.click();
+                } else if (e.key.toLowerCase() === 'c') { // 綁定 C 鍵為複製快捷鍵
+                    duplicateSelectedObject();
+                } else if (e.key === 'Shift') {
+                    isShiftDown = true;
+                    updateTransformSnaps();
+                }
+            });
+
+            // 新增：釋放 Shift 鍵的監聽
+            window.addEventListener('keyup', (e) => {
+                if (e.key === 'Shift') {
+                    isShiftDown = false;
+                    updateTransformSnaps();
+                }
+            });
+        }
+
+        // --- 渲染迴圈與自適應 ---
+        function onWindowResize() {
+            const leftContainer = document.getElementById('left-canvas-container');
+            const rightContainer = document.getElementById('right-canvas-container');
+
+            // 加入 clientWidth/clientHeight > 0 的判斷，防止 Three.js 產生 Matrix 運算崩潰
+            if (leftCamera && leftRenderer && leftContainer.clientWidth > 0 && leftContainer.clientHeight > 0) {
+                leftCamera.aspect = leftContainer.clientWidth / leftContainer.clientHeight;
+                leftCamera.updateProjectionMatrix();
+                leftRenderer.setSize(leftContainer.clientWidth, leftContainer.clientHeight);
+            }
+
+            if (rightCamera && rightRenderer && rightContainer.clientWidth > 0 && rightContainer.clientHeight > 0) {
+                rightCamera.aspect = rightContainer.clientWidth / rightContainer.clientHeight;
+                rightCamera.updateProjectionMatrix();
+                rightRenderer.setSize(rightContainer.clientWidth, rightContainer.clientHeight);
+            }
+        }
+
+        function rendererLoop() {
+            requestAnimationFrame(rendererLoop);
+            
+            // 更新控制器
+            if (leftControls) leftControls.update();
+            if (rightControls) rightControls.update();
+
+            // 渲染雙場景
+            if (leftRenderer && leftScene && leftCamera) {
+                leftRenderer.render(leftScene, leftCamera);
+            }
+            if (rightRenderer && rightScene && rightCamera) {
+                rightRenderer.render(rightScene, rightCamera);
+            }
+        }
+
+        // 啟動程式
+        window.onload = initSystem;
+
+    </script>
+</body>
+</html>
